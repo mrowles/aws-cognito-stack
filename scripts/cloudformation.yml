@@ -1,0 +1,219 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Metadata:
+  License: Apache-2.0
+Description: 'Cognito stack creation for app'
+Parameters:
+  CognitoUserPoolName:
+    Type: String
+    Description: The Cognito User Pool name e.g., app-branch
+    MinLength: 1
+    MaxLength: 128
+    # TODO Complete these
+    # AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    # ConstraintDescription: must be a valid Cognito User Pool name
+  CognitoClientName:
+    Type: String
+    Description: The Cognito User Pool Client name e.g., app-branch-client
+    MinLength: 1
+    MaxLength: 128
+    # TODO Complete these
+    # AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    # ConstraintDescription: must be a valid Cognito User Pool Client name
+  CognitoIdentityPoolName:
+    Type: String
+    Description: The Cognito Identity Pool name e.g., AppBranch
+    MinLength: 1
+    MaxLength: 128
+    # TODO Complete these
+    # AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    # ConstraintDescription: must be a valid Cognito Identity Pool name
+  ClientDomain:
+    Type: String
+    Description: The domain name e.g. domain.com
+    # TODO Complete these
+    # AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    # ConstraintDescription: must be a valid DNS zone name.
+  AppNiceName:
+    Type: String
+    Description: The app nice name e.g., Appname
+    MinLength: 1
+    MaxLength: 50
+    # TODO Complete these
+    # AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    # ConstraintDescription: must be a valid app name
+  BranchName:
+    Type: String
+    Description: The branch name e.g., master
+    MinLength: 1
+    MaxLength: 50
+    # TODO Complete these
+    # AllowedPattern: (?!-)[a-zA-Z0-9-.]{1,63}(?<!-)
+    # ConstraintDescription: must be a valid app name
+  SesDomainArn:
+    Type: String
+    Description: The Amazon Resource Name (ARN) of an AWS Simple Email Service (SES) domain
+    AllowedPattern: "arn:aws:ses:.*"
+    ConstraintDescription: Must match a valid Amazon Resource Name (ARN) of an of an AWS Simple Email Service (SES) identity
+Resources:
+  # Creates the Cognito Pool
+  CognitoUserPool:
+    Type: 'AWS::Cognito::UserPool'
+    Properties:
+      UserPoolName: !Ref 'CognitoUserPoolName'
+      SmsVerificationMessage: 'Your verification code is {####}.'
+      AutoVerifiedAttributes:
+        - email
+      MfaConfiguration: 'OFF'
+      EmailConfiguration:
+        EmailSendingAccount: 'DEVELOPER'
+        ReplyToEmailAddress: !Join ['', ['info@', !Ref 'ClientDomain']]
+        SourceArn: !Ref 'SesDomainArn'
+      EmailVerificationSubject: !Join ['', ['Your ', !Ref 'AppNiceName', ' verification code']]
+      EmailVerificationMessage: !Join ['', ['Your ', !Ref 'AppNiceName', ' verification code is {####}.']]
+      SmsAuthenticationMessage: !Join ['', ['Your ', !Ref 'AppNiceName', ' authentication code is {####}.']]
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: false
+        - Name: phone_number
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+      Policies:
+        PasswordPolicy:
+          RequireLowercase: true
+          RequireSymbols: false
+          RequireNumbers: true
+          MinimumLength: 8
+          RequireUppercase: true
+      AdminCreateUserConfig:
+        InviteMessageTemplate:
+          EmailMessage: !Join ['', ['Your ', !Ref 'AppNiceName', ' username is {username} and temporary password is {####}.']]
+          EmailSubject: !Join ['', ['Your ', !Ref 'AppNiceName', ' password']]
+          SMSMessage: !Join ['', ['Your ', !Ref 'AppNiceName', ' username is {username} and temporary password is {####}.']]
+        UnusedAccountValidityDays: 7
+        AllowAdminCreateUserOnly: false
+  # Creates a User Pool Client to be used by the identity pool
+  UserPoolClient:
+    Type: 'AWS::Cognito::UserPoolClient'
+    Properties:
+      ClientName: !Ref 'CognitoClientName'
+      GenerateSecret: false
+      UserPoolId:
+        Ref: CognitoUserPool
+  # Creates a federeated Identity pool
+  IdentityPool:
+    Type: 'AWS::Cognito::IdentityPool'
+    Properties:
+      IdentityPoolName: !Ref 'CognitoIdentityPoolName'
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+        - ClientId:
+            Ref: UserPoolClient
+          ProviderName:
+            'Fn::GetAtt': [ CognitoUserPool, ProviderName ]
+  # Create a role for unauthorized access to AWS resources. Very limited access. Only allows users in the previously created Identity Pool
+  CognitoUnAuthorizedRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Federated: 'cognito-identity.amazonaws.com'
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud':
+                  Ref: IdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': unauthenticated
+      Policies:
+        - PolicyName: 'CognitoUnauthorizedPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'mobileanalytics:PutEvents'
+                  - 'cognito-sync:*'
+                Resource: '*'
+  # Create a role for authorized access to AWS resources. Control what your user can access. This example only allows Lambda invokation
+  # Only allows users in the previously created Identity Pool
+  CognitoAuthorizedRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Federated: 'cognito-identity.amazonaws.com'
+            Action:
+              - 'sts:AssumeRoleWithWebIdentity'
+            Condition:
+              StringEquals:
+                'cognito-identity.amazonaws.com:aud':
+                  Ref: IdentityPool
+              'ForAnyValue:StringLike':
+                'cognito-identity.amazonaws.com:amr': authenticated
+      Policies:
+        - PolicyName: 'CognitoAuthorizedPolicy'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: 'Allow'
+                Action:
+                  - 'mobileanalytics:PutEvents'
+                  - 'cognito-sync:*'
+                  - 'cognito-identity:*'
+                Resource: '*'
+              - Effect: 'Allow'
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource: '*'
+  # Assigns the roles to the Identity Pool
+  IdentityPoolRoleMapping:
+    Type: 'AWS::Cognito::IdentityPoolRoleAttachment'
+    Properties:
+      IdentityPoolId:
+        Ref: IdentityPool
+      Roles:
+        authenticated:
+          'Fn::GetAtt': [ CognitoAuthorizedRole, Arn ]
+        unauthenticated:
+          'Fn::GetAtt': [ CognitoUnAuthorizedRole, Arn ]
+Outputs:
+  CognitoUserPoolId:
+    Description: 'ID for primary Cognito User Pool'
+    Value:
+      Ref: CognitoUserPool
+    Export:
+      Name: !Join ['', ['CognitoUserPoolId-', !Ref 'BranchName']]
+  CognitoUserPoolName:
+    Description: 'Name for primary Cognito User Pool'
+    Value:
+      !Ref 'CognitoUserPoolName'
+    Export:
+      Name: !Join ['', ['CognitoUserPoolName-', !Ref 'BranchName']]
+  CognitoUserPoolArn:
+    Description: 'ARN for primary Cognito User Pool'
+    Value:
+      !GetAtt CognitoUserPool.Arn
+    Export:
+      Name: !Join ['', ['CognitoUserPoolArn-', !Ref 'BranchName']]
+  CognitoUserPoolClientId:
+    Description: 'ID for Cognito User Pool Client'
+    Value:
+      Ref: UserPoolClient
+    Export:
+      Name: !Join ['', ['CognitoUserPoolClientId-', !Ref 'BranchName']]
+  IdentityPoolId:
+    Description: 'ID for Cognito Identity Pool'
+    Value:
+      Ref: IdentityPool
+    Export:
+      Name: !Join ['', ['IdentityPoolId-', !Ref 'BranchName']]
